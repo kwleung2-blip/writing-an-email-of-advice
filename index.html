@@ -1,0 +1,714 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Home, ChevronRight, CheckCircle2, 
+  MessageCircle, HeartPulse, Activity, ShieldAlert, 
+  PenTool, MailCheck, Copy, Check, Trash2, HelpCircle,
+  Volume2, VolumeX, Sparkles, Zap
+} from 'lucide-react';
+
+// === 音效引擎 (Web Audio API) ===
+// 針對 iPad (iOS Safari) 優化：使用單一全局 AudioContext，並在點擊時喚醒 (Resume)
+let globalAudioCtx = null;
+
+const playSound = (type, enabled) => {
+  if (!enabled) return;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  
+  if (!globalAudioCtx) {
+    globalAudioCtx = new AudioContext();
+  }
+  
+  // iOS 必須在使用者互動時 resume
+  if (globalAudioCtx.state === 'suspended') {
+    globalAudioCtx.resume();
+  }
+  
+  const ctx = globalAudioCtx;
+
+  if (type === 'click') {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.1);
+  } else if (type === 'success') {
+    // 播放 C-E-G 歡樂和弦 (Level up!)
+    [523.25, 659.25, 783.99].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, ctx.currentTime + (i * 0.1));
+      gain.gain.linearRampToValueAtTime(0.1, ctx.currentTime + 0.05 + (i * 0.1));
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5 + (i * 0.1));
+      osc.start(ctx.currentTime + (i * 0.1));
+      osc.stop(ctx.currentTime + 1 + (i * 0.1));
+    });
+  } else if (type === 'trash') {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.3);
+  } else if (type === 'tada') {
+    // 通關大音效
+    [440, 554.37, 659.25, 880].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.05, ctx.currentTime + 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+      osc.start();
+      osc.stop(ctx.currentTime + 1.5);
+    });
+  }
+};
+
+const App = () => {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  const [draft, setDraft] = useState({
+    step1_greeting: "Dear __________,\n\n",
+    step1_opening: "",
+    step2: "First, you said that ",
+    step3: "Next, you said that ",
+    step4: "Lastly, you said that ",
+    step5: ""
+  });
+
+  const vocab = {
+    step1_thanks: [
+      { en: "Thank you for your email.", zh: "謝謝你的來信" },
+      { en: "I am glad you wrote to me.", zh: "很高興你寫信給我" }
+    ],
+    step1_sympathy: [
+      { en: "I am sorry to hear about your problems.", zh: "聽到你的煩惱我很難過" },
+      { en: "I understand how you feel.", zh: "我明白你的感受" },
+      { en: "It must be hard for you.", zh: "這對你來說一定很辛苦" }
+    ],
+    step1_purpose: [
+      { en: "Let me give you some advice.", zh: "讓我給你一些建議吧" },
+      { en: "Here are some tips for you.", zh: "這裡有一些提示給你" },
+      { en: "Don't worry. I can help you.", zh: "別擔心，我可以幫你" }
+    ],
+    step2_guide: {
+      question: "What is Kitty's problem? (她的臉怎麼了？)",
+      tip: "💡 提示：將信中的 'I' 改為 'you'。 (例如：you have...)",
+      words: ["many pimples", "on your face", "skin problem"]
+    },
+    step2_actions: [
+      { en: "wash your face twice a day", zh: "每天洗臉兩次" },
+      { en: "drink more water", zh: "多喝水" },
+      { en: "eat less fried food", zh: "少吃煎炸食物" },
+      { en: "sleep early", zh: "早點睡覺" }
+    ],
+    step3_guide: {
+      question: "What happened after the holidays? (節日後她怎麼了？)",
+      tip: "💡 提示：將信中的 'I have gained' 改為 'you have gained'。",
+      words: ["gained a lot of weight", "become fat", "too much food"]
+    },
+    step3_actions: [
+      { en: "do exercise every day", gerund: "doing exercise every day", zh: "每天做運動" },
+      { en: "go jogging", gerund: "going jogging", zh: "去緩步跑" },
+      { en: "eat more vegetables", gerund: "eating more vegetables", zh: "多吃蔬菜" },
+      { en: "eat less junk food", gerund: "eating less junk food", zh: "少吃垃圾食物" }
+    ],
+    step4_guide: {
+      question: "What do her classmates do? (同學對她做了什麼？)",
+      tip: "💡 提示：將信中的 'my' 改為 'your'，'me' 改為 'you'。",
+      words: ["classmates", "bully", "call names", "laugh at"]
+    },
+    step4_actions: [
+      { en: "tell your teachers", zh: "告訴老師" },
+      { en: "talk to your parents", zh: "跟父母傾訴" },
+      { en: "ignore their bad words", zh: "不理會他們的壞話" },
+      { en: "be brave", zh: "保持勇敢" }
+    ],
+    step5_closing: [
+      { en: "I hope my advice helps. Cheer up!", zh: "希望我的建議有幫助。振作起來！" },
+      { en: "Don't worry too much. Everything will be fine.", zh: "別太擔心，一切都會好起來的。" },
+      { en: "Write back soon and let me know how you are doing.", zh: "早日回信讓我知道你的近況。" }
+    ],
+    step5_signoff: [
+      { en: "Yours,\nChris Wong", zh: "祝好，Chris Wong" },
+      { en: "Best wishes,\nChris Wong", zh: "最美好的祝願，Chris Wong" },
+      { en: "Take care,\nChris Wong", zh: "保重，Chris Wong" }
+    ]
+  };
+
+  const stepsInfo = [
+    { id: 1, title: "Greeting & Opening", desc: "問候與開場白", icon: <MessageCircle size={32} />, color: "from-blue-400 to-indigo-500", shadow: "shadow-blue-200" },
+    { id: 2, title: "Advice for Pimples", desc: "問題一：青春痘", icon: <HeartPulse size={32} />, color: "from-pink-400 to-rose-500", shadow: "shadow-pink-200" },
+    { id: 3, title: "Advice for Weight", desc: "問題二：體重", icon: <Activity size={32} />, color: "from-orange-400 to-amber-500", shadow: "shadow-orange-200" },
+    { id: 4, title: "Advice for Bullying", desc: "問題三：欺凌", icon: <ShieldAlert size={32} />, color: "from-red-400 to-rose-600", shadow: "shadow-red-200" },
+    { id: 5, title: "Closing & Sign-off", desc: "結尾與下款", icon: <PenTool size={32} />, color: "from-purple-400 to-fuchsia-500", shadow: "shadow-purple-200" }
+  ];
+
+  const isStepDone = (stepNum) => {
+    if (stepNum === 6) return false;
+    if (stepNum === 1) return draft.step1_opening.trim().length > 15 && draft.step1_greeting.trim().length > 5;
+    
+    const defaults = { 2: "First, you said that ", 3: "Next, you said that ", 4: "Lastly, you said that " };
+    const currentLength = draft[`step${stepNum}`]?.trim().length || 0;
+    const defaultLength = (defaults[stepNum] || "").trim().length;
+    return currentLength > defaultLength + 5; 
+  };
+
+  // 計算進度條 (完成的任務數量)
+  const completedCount = stepsInfo.filter(s => isStepDone(s.id)).length;
+  const progressPercent = (completedCount / 5) * 100;
+
+  const handleDraftChange = (stepKey, value) => {
+    setDraft(prev => ({ ...prev, [stepKey]: value }));
+  };
+
+  const clearDraft = (stepKey) => {
+    playSound('trash', soundEnabled);
+    const defaults = { step2: "First, you said that ", step3: "Next, you said that ", step4: "Lastly, you said that " };
+    setDraft(prev => ({ ...prev, [stepKey]: defaults[stepKey] || "" }));
+  };
+
+  const insertVocab = (stepKey, phrase, gerundPhrase = null) => {
+    playSound('click', soundEnabled);
+    setDraft(prev => {
+      let currentText = prev[stepKey];
+      if (!currentText.endsWith(' ') && currentText !== '') currentText += ' ';
+      
+      let textToInsert = phrase;
+      if (gerundPhrase && currentText.trim().toLowerCase().endsWith('about')) {
+        textToInsert = gerundPhrase;
+      }
+
+      if (currentText.includes(textToInsert)) return prev;
+      return { ...prev, [stepKey]: currentText + textToInsert };
+    });
+  };
+
+  const handleNextStep = (nextStep) => {
+    if (isStepDone(currentStep)) playSound('success', soundEnabled);
+    if (nextStep === 6) playSound('tada', soundEnabled);
+    setCurrentStep(nextStep);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const getFullEmail = () => {
+    return [
+      draft.step1_greeting + draft.step1_opening,
+      draft.step2,
+      draft.step3,
+      draft.step4,
+      draft.step5
+    ].filter(text => text.trim() !== '').join('\n\n');
+  };
+
+  const getWordCount = () => getFullEmail().trim().split(/\s+/).filter(w => w.length > 0).length;
+
+  const handleCopy = () => {
+    playSound('success', soundEnabled);
+    navigator.clipboard.writeText(getFullEmail()).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  // === 共用導航列組件 ===
+  const StepHeader = ({ stepNum }) => {
+    const isDone = isStepDone(stepNum);
+    return (
+      <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200 sticky top-4 z-10">
+        <button onClick={() => setCurrentStep(0)} className="flex items-center gap-2 text-slate-500 hover:text-indigo-600 font-bold px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors">
+          <Home size={20} /> 返回任務主頁
+        </button>
+        <div className="font-black text-slate-800 bg-slate-100 px-4 py-1.5 rounded-full text-sm">
+          Mission {stepNum} / 5
+        </div>
+        <button 
+          onClick={() => handleNextStep(stepNum + 1)} 
+          className={`flex items-center gap-2 font-bold px-5 py-2.5 rounded-xl transition-all shadow-md transform hover:scale-105 active:scale-95 ${
+            isDone 
+              ? 'bg-gradient-to-r from-green-400 to-emerald-500 text-white animate-pulse shadow-green-200' 
+              : 'bg-slate-800 text-white hover:bg-slate-700'
+          }`}
+        >
+          {isDone ? '完成！下一步' : '下一步'} <ChevronRight size={20} />
+        </button>
+      </div>
+    );
+  };
+
+  // === 頁面渲染 ===
+
+  const renderHome = () => (
+    <div className="space-y-8 animate-in fade-in duration-500 zoom-in-95">
+      
+      {/* 任務背景卡片 */}
+      <div className="bg-white rounded-3xl p-8 text-center shadow-xl border border-slate-100 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-400 via-purple-500 to-pink-500"></div>
+        <div className="inline-flex items-center justify-center bg-indigo-100 text-indigo-700 p-3 rounded-2xl mb-4">
+          <Zap size={32} className="text-amber-500 fill-amber-500" />
+        </div>
+        <h2 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">📝 你的緊急任務 (Your Mission)</h2>
+        <p className="text-slate-600 text-lg leading-relaxed max-w-2xl mx-auto font-medium">
+          你是 <strong>Chris Wong</strong>。你的朋友 <strong className="text-pink-600">Kitty</strong> 遇到了三個大煩惱（青春痘、變胖、被同學欺凌）。請完成以下 5 個關卡，寫一封約 100 字的建議信拯救她！
+        </p>
+        
+        {/* EXP 進度條 */}
+        <div className="mt-8 max-w-lg mx-auto">
+          <div className="flex justify-between text-sm font-bold text-slate-500 mb-2">
+            <span>任務進度 (Progress)</span>
+            <span className="text-indigo-600">{completedCount} / 5 關</span>
+          </div>
+          <div className="h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner border border-slate-200">
+            <div 
+              className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 transition-all duration-1000 ease-out relative"
+              style={{ width: `${progressPercent}%` }}
+            >
+              <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 關卡選擇器 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {stepsInfo.map((step) => {
+          const done = isStepDone(step.id);
+          return (
+            <button
+              key={step.id}
+              onClick={() => setCurrentStep(step.id)}
+              className={`group relative flex flex-col items-center justify-center p-8 rounded-3xl transition-all duration-300 transform hover:-translate-y-2 hover:shadow-2xl border-2 ${
+                done 
+                  ? 'bg-white border-green-200 shadow-sm opacity-90' 
+                  : 'bg-white border-slate-100 shadow-lg'
+              }`}
+            >
+              {done && (
+                <div className="absolute -top-3 -right-3 bg-gradient-to-br from-green-400 to-emerald-500 text-white rounded-full p-1.5 shadow-lg animate-bounce">
+                  <CheckCircle2 size={24} />
+                </div>
+              )}
+              
+              <div className={`mb-5 p-4 rounded-2xl bg-gradient-to-br ${step.color} text-white shadow-lg transform group-hover:scale-110 transition-transform duration-300`}>
+                {step.icon}
+              </div>
+              <h3 className="font-black text-xl mb-1 text-slate-800">Mission {step.id}</h3>
+              <p className="font-bold text-slate-600">{step.title}</p>
+              <p className="text-sm text-slate-400 mt-2 font-medium bg-slate-50 px-3 py-1 rounded-lg">{step.desc}</p>
+            </button>
+          );
+        })}
+      </div>
+      
+      {/* 預覽按鈕 (當 5 關全破時閃爍) */}
+      <div className="text-center pt-4">
+         <button 
+          onClick={() => handleNextStep(6)}
+          className={`px-8 py-4 rounded-2xl font-black text-lg transition-all shadow-xl transform hover:scale-105 active:scale-95 flex items-center gap-2 mx-auto ${
+            completedCount === 5 
+              ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-white animate-pulse ring-4 ring-orange-200'
+              : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+          }`}
+          disabled={completedCount < 5}
+         >
+           <Sparkles /> {completedCount === 5 ? '解鎖！查看最終 Email' : `請先完成所有任務 (${completedCount}/5)`}
+         </button>
+      </div>
+    </div>
+  );
+
+  const renderStep1 = () => (
+    <div className="max-w-3xl mx-auto space-y-6 animate-in slide-in-from-right-8 duration-300">
+      <StepHeader stepNum={1} />
+
+      <div className="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
+        <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-6 md:p-8 text-center relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+          <h2 className="text-2xl md:text-3xl font-black text-white relative z-10 flex items-center justify-center gap-3">
+            <MessageCircle /> Greeting & Opening
+          </h2>
+          <p className="text-blue-100 font-medium mt-2 relative z-10">第一關：寫下友善的問候與開場白</p>
+        </div>
+        
+        <div className="p-4 md:p-8 space-y-8 bg-slate-50">
+          {/* Greeting */}
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100">
+            <label className="flex items-center gap-2 font-black text-indigo-800 mb-3 text-lg">
+              <span className="bg-indigo-100 text-indigo-700 w-8 h-8 rounded-full flex items-center justify-center">A</span>
+              Who are you writing to? (收件人是誰？)
+            </label>
+            <textarea
+              value={draft.step1_greeting}
+              onChange={(e) => handleDraftChange('step1_greeting', e.target.value)}
+              className="w-full h-16 p-4 text-xl font-bold text-slate-700 border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all resize-none shadow-inner"
+            />
+          </div>
+          
+          {/* Opening */}
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100">
+            <div className="flex flex-col md:flex-row justify-between md:items-end gap-3 mb-4">
+              <label className="flex items-center gap-2 font-black text-indigo-800 text-lg">
+                <span className="bg-indigo-100 text-indigo-700 w-8 h-8 rounded-full flex items-center justify-center">B</span>
+                Opening (開場白)
+              </label>
+              <button onClick={() => clearDraft('step1_opening')} className="flex items-center justify-center gap-1 text-red-500 hover:text-red-700 hover:bg-red-50 text-sm font-bold px-3 py-2 rounded-lg transition-colors border border-red-100 touch-manipulation">
+                <Trash2 size={16}/> 清除重寫
+              </button>
+            </div>
+            
+            <textarea
+              value={draft.step1_opening}
+              onChange={(e) => handleDraftChange('step1_opening', e.target.value)}
+              className="w-full h-32 p-4 text-lg font-medium text-slate-800 border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all resize-none leading-relaxed mb-6 shadow-inner"
+              placeholder="點擊下方彩色按鈕加入句子..."
+            />
+
+            {/* iPad 直排優化：從 md (768px) 改為 lg (1024px) 才並排 */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Category 1 */}
+              <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
+                <p className="font-bold text-blue-800 mb-3 text-sm">1️⃣ 感謝來信</p>
+                <div className="flex flex-col gap-2">
+                  {vocab.step1_thanks.map((v, i) => (
+                    <button key={`t${i}`} onClick={() => insertVocab('step1_opening', v.en)} className="text-left bg-white border border-blue-200 hover:border-blue-500 hover:bg-blue-50 p-3 md:p-4 rounded-xl text-blue-700 font-bold active:scale-95 transition-all shadow-sm touch-manipulation">
+                      {v.en} <div className="text-slate-400 text-xs mt-1 font-medium">{v.zh}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Category 2 */}
+              <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100">
+                <p className="font-bold text-indigo-800 mb-3 text-sm">2️⃣ 表達關心</p>
+                <div className="flex flex-col gap-2">
+                  {vocab.step1_sympathy.map((v, i) => (
+                    <button key={`s${i}`} onClick={() => insertVocab('step1_opening', v.en)} className="text-left bg-white border border-indigo-200 hover:border-indigo-500 hover:bg-indigo-50 p-3 md:p-4 rounded-xl text-indigo-700 font-bold active:scale-95 transition-all shadow-sm touch-manipulation">
+                      {v.en} <div className="text-slate-400 text-xs mt-1 font-medium">{v.zh}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Category 3 */}
+              <div className="bg-purple-50/50 p-4 rounded-2xl border border-purple-100">
+                <p className="font-bold text-purple-800 mb-3 text-sm">3️⃣ 帶出建議</p>
+                <div className="flex flex-col gap-2">
+                  {vocab.step1_purpose.map((v, i) => (
+                    <button key={`p${i}`} onClick={() => insertVocab('step1_opening', v.en)} className="text-left bg-white border border-purple-200 hover:border-purple-500 hover:bg-purple-50 p-3 md:p-4 rounded-xl text-purple-700 font-bold active:scale-95 transition-all shadow-sm touch-manipulation">
+                      {v.en} <div className="text-slate-400 text-xs mt-1 font-medium">{v.zh}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderWriteStep = (stepNum, engTitle, stepKey, guide, actions, themeColor, themeGradients, tipComponent) => (
+    <div className="max-w-3xl mx-auto space-y-6 animate-in slide-in-from-right-8 duration-300">
+      <StepHeader stepNum={stepNum} />
+
+      <div className="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
+        <div className={`bg-gradient-to-r ${themeGradients} p-6 md:p-8 text-center relative overflow-hidden`}>
+          <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+          <h2 className="text-2xl md:text-3xl font-black text-white relative z-10 flex items-center justify-center gap-3">
+            {stepNum === 2 && <HeartPulse />}
+            {stepNum === 3 && <Activity />}
+            {stepNum === 4 && <ShieldAlert />}
+            {engTitle}
+          </h2>
+          <p className="text-white/80 font-medium mt-2 relative z-10">看提示自己打字 ＋ 點擊短語完成句子！</p>
+        </div>
+        
+        <div className="p-4 md:p-8 bg-slate-50">
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 mb-6 relative mt-2">
+            <div className="absolute -top-3 right-6 bg-slate-800 text-white text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-md">
+              <PenTool size={12}/> 寫作區
+            </div>
+            <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-3 mb-3">
+              <span className={`bg-${themeColor}-100 text-${themeColor}-800 px-3 py-1 rounded-lg text-sm font-bold flex items-center gap-2`}>
+                <CheckCircle2 size={16}/> 學校規定格式已準備好
+              </span>
+              <button onClick={() => clearDraft(stepKey)} className="flex items-center justify-center gap-1 text-red-500 hover:text-red-700 hover:bg-red-50 text-sm font-bold px-3 py-2 rounded-lg transition-colors border border-red-100 touch-manipulation">
+                <Trash2 size={16}/> 清除重寫
+              </button>
+            </div>
+            
+            <textarea
+              value={draft[stepKey]}
+              onChange={(e) => handleDraftChange(stepKey, e.target.value)}
+              className={`w-full h-32 p-4 md:p-5 text-xl font-medium text-slate-800 border-2 border-slate-200 rounded-xl focus:border-${themeColor}-500 focus:ring-4 focus:ring-${themeColor}-100 transition-all resize-none leading-relaxed shadow-inner`}
+              placeholder="請在這裡繼續打字..."
+            />
+          </div>
+
+          {/* iPad 直排優化：從 md (768px) 改為 lg (1024px) 才並排，直立時上下堆疊確保按鈕夠大 */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* 左側：問題引導 */}
+            <div className={`bg-${themeColor}-50 p-5 md:p-6 rounded-3xl border border-${themeColor}-100 flex flex-col relative overflow-hidden`}>
+              <div className={`absolute top-0 right-0 w-16 h-16 bg-${themeColor}-200 rounded-bl-full opacity-50`}></div>
+              <p className={`font-black text-${themeColor}-800 mb-4 flex items-center gap-2 text-lg relative z-10`}>
+                <span className={`bg-${themeColor}-200 text-${themeColor}-900 w-8 h-8 rounded-full flex items-center justify-center shadow-sm`}>1</span> 
+                思考她的問題 (Think & Type)
+              </p>
+              <div className="bg-white p-5 rounded-2xl border border-white shadow-sm flex-grow relative z-10">
+                <p className={`text-${themeColor}-900 font-bold mb-3 text-lg md:text-xl leading-snug`}>{guide.question}</p>
+                <div className="bg-amber-50 border-l-4 border-amber-400 p-3 rounded-r-lg mb-4 text-sm text-amber-900 font-medium">
+                  {guide.tip}
+                </div>
+                
+                <p className="text-xs text-slate-400 font-bold mb-2 uppercase tracking-wider">參考字詞 (不可點擊):</p>
+                <div className="flex flex-wrap gap-2">
+                  {guide.words.map((w, i) => (
+                    <span key={i} className={`bg-${themeColor}-50/50 text-${themeColor}-700 px-3 py-1.5 rounded-lg text-sm font-bold border border-${themeColor}-100`}>
+                      {w}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* 右側：短語建議 / 挑戰自己寫 */}
+            <div className={`bg-${themeColor}-50 p-5 md:p-6 rounded-3xl border border-${themeColor}-100 flex flex-col relative overflow-hidden`}>
+              <div className={`absolute top-0 right-0 w-16 h-16 bg-${themeColor}-200 rounded-bl-full opacity-50`}></div>
+              <p className={`font-black text-${themeColor}-800 mb-4 flex items-center gap-2 text-lg relative z-10`}>
+                <span className={`bg-${themeColor}-200 text-${themeColor}-900 w-8 h-8 rounded-full flex items-center justify-center shadow-sm`}>2</span> 
+                {actions && actions.length > 0 ? '參考短語造句 (Click to Add)' : '自己寫出建議 (Write Your Own)'}
+              </p>
+              
+              <div className="bg-white/80 p-4 rounded-2xl mb-4 text-sm text-slate-700 border border-white shadow-sm relative z-10">
+                {tipComponent || (
+                  <>
+                    <span className="font-bold text-amber-600">💡 造句提示：</span>點擊按鈕前，請先在左邊打上 <br/>
+                    <code className="text-blue-800 font-black bg-blue-100 px-2 py-1 rounded-md mt-2 inline-block shadow-sm">You should </code> 或 <code className="text-blue-800 font-black bg-blue-100 px-2 py-1 rounded-md mt-2 inline-block shadow-sm">I suggest you </code>
+                  </>
+                )}
+              </div>
+
+              {actions && actions.length > 0 ? (
+                <div className="flex flex-col gap-3 relative z-10">
+                  {actions.map((v, i) => (
+                    <button key={`ac${i}`} onClick={() => insertVocab(stepKey, v.en, v.gerund)} className={`text-left bg-white border-2 border-transparent hover:border-${themeColor}-400 p-4 rounded-xl text-${themeColor}-700 font-bold active:scale-95 shadow-sm hover:shadow-md transition-all group touch-manipulation min-h-[60px]`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="group-hover:translate-x-1 transition-transform text-base">{v.en}</span>
+                        {v.gerund && <span className={`text-xs font-black text-${themeColor}-500 bg-${themeColor}-50 px-2 py-0.5 rounded-full whitespace-nowrap`}>(或 {v.gerund})</span>}
+                      </div>
+                      <div className="text-slate-400 text-xs font-medium mt-1">{v.zh}</div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className={`flex-grow flex items-center justify-center border-2 border-dashed border-${themeColor}-300 rounded-xl bg-${themeColor}-100/50 p-6 text-center relative z-10`}>
+                  <p className={`text-${themeColor}-700 font-bold`}>
+                    ✨ 挑戰時間！<br/>
+                    <span className={`text-sm font-medium text-${themeColor}-600 mt-2 inline-block`}>請自己想一個好建議，<br/>並在寫作區自己打出來吧！</span>
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderStep5 = () => (
+    <div className="max-w-3xl mx-auto space-y-6 animate-in slide-in-from-right-8 duration-300">
+      <StepHeader stepNum={5} />
+
+      <div className="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
+        <div className="bg-gradient-to-r from-purple-500 to-fuchsia-600 p-6 md:p-8 text-center relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+          <h2 className="text-2xl md:text-3xl font-black text-white relative z-10 flex items-center justify-center gap-3">
+            <PenTool /> Closing & Sign-off
+          </h2>
+          <p className="text-purple-100 font-medium mt-2 relative z-10">最後一步！寫下鼓勵說話與下款</p>
+        </div>
+        
+        <div className="p-4 md:p-8 bg-slate-50">
+          <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 mb-6">
+            <div className="flex justify-between items-end mb-3">
+              <span className="bg-purple-100 text-purple-800 px-3 py-1 rounded-lg text-sm font-bold flex items-center gap-2">
+                <PenTool size={16}/> 結尾區
+              </span>
+              <button onClick={() => clearDraft('step5')} className="flex items-center justify-center gap-1 text-red-500 hover:text-red-700 hover:bg-red-50 text-sm font-bold px-3 py-2 rounded-lg transition-colors border border-red-100 touch-manipulation">
+                <Trash2 size={16}/> 清除重寫
+              </button>
+            </div>
+            
+            <textarea
+              value={draft.step5}
+              onChange={(e) => handleDraftChange('step5', e.target.value)}
+              className="w-full h-32 p-4 md:p-5 text-xl font-medium text-slate-800 border-2 border-slate-200 rounded-xl focus:border-purple-500 focus:ring-4 focus:ring-purple-100 transition-all resize-none leading-relaxed shadow-inner"
+              placeholder="點擊按鈕加入結尾..."
+            />
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-purple-50 p-5 md:p-6 rounded-3xl border border-purple-100">
+              <p className="font-black text-purple-800 mb-4 flex items-center gap-2 text-lg">
+                <span className="bg-purple-200 text-purple-900 w-8 h-8 rounded-full flex items-center justify-center shadow-sm">1</span> 
+                鼓勵句子 (Choose 1)
+              </p>
+              <div className="flex flex-col gap-3">
+                {vocab.step5_closing.map((v, i) => (
+                  <button key={`cl${i}`} onClick={() => insertVocab('step5', v.en + '\n\n')} className="text-left bg-white border-2 border-transparent hover:border-purple-400 p-4 rounded-xl text-purple-700 font-bold active:scale-95 shadow-sm transition-all hover:-translate-y-1 touch-manipulation">
+                    <span className="text-base">{v.en}</span> <div className="text-slate-400 text-xs mt-1 font-medium">{v.zh}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-slate-100 p-5 md:p-6 rounded-3xl border border-slate-200">
+              <p className="font-black text-slate-800 mb-4 flex items-center gap-2 text-lg">
+                <span className="bg-slate-300 text-slate-900 w-8 h-8 rounded-full flex items-center justify-center shadow-sm">2</span> 
+                下款 (Choose 1)
+              </p>
+              <div className="flex flex-col gap-3">
+                {vocab.step5_signoff.map((v, i) => (
+                  <button key={`si${i}`} onClick={() => insertVocab('step5', v.en)} className="text-left bg-white border-2 border-transparent hover:border-slate-400 p-4 rounded-xl text-slate-700 font-bold active:scale-95 shadow-sm transition-all whitespace-pre-line hover:-translate-y-1 touch-manipulation">
+                    <span className="text-base">{v.en}</span> <div className="text-slate-400 text-xs mt-1 font-medium">{v.zh}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderReviewStep = () => {
+    const wordCount = getWordCount();
+    const isGoodLength = wordCount >= 80 && wordCount <= 130;
+
+    return (
+      <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-right-8 duration-500">
+        <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+          <button onClick={() => setCurrentStep(0)} className="flex items-center gap-2 text-slate-500 hover:text-indigo-600 font-bold px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors">
+            <Home size={20} /> 返回主頁
+          </button>
+          <div className="font-black text-slate-800 bg-slate-100 px-4 py-1.5 rounded-full text-sm">
+            🏆 最終成果 (Final Email)
+          </div>
+          <button onClick={handleCopy} className={`flex items-center gap-2 font-bold px-6 py-2.5 rounded-xl transition-all shadow-md transform hover:scale-105 active:scale-95 ${copied ? 'bg-gradient-to-r from-green-400 to-emerald-500 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'}`}>
+            {copied ? <><Check size={20} /> 已複製！去貼上吧</> : <><Copy size={20} /> 複製全文 (Copy)</>}
+          </button>
+        </div>
+
+        <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden transform transition-all">
+          <div className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-500 p-8 text-center relative">
+            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/stardust.png')] opacity-30"></div>
+            <h2 className="text-4xl font-black text-white relative z-10 flex items-center justify-center gap-3 drop-shadow-md">
+              🎉 任務大成功！恭喜你！
+            </h2>
+          </div>
+
+          <div className="p-10 bg-[#fbfbf9]">
+            {/* Email Header Mockup */}
+            <div className="mb-6 pb-6 border-b-2 border-slate-100 text-sm grid grid-cols-[60px_1fr] gap-4 bg-white p-6 rounded-2xl shadow-sm">
+              <span className="font-black text-slate-400 uppercase tracking-wider">To:</span> <span className="text-slate-800 font-medium bg-slate-100 px-3 py-1 rounded-lg w-max">kittychan@hkteen.com</span>
+              <span className="font-black text-slate-400 uppercase tracking-wider">From:</span> <span className="text-slate-800 font-medium bg-slate-100 px-3 py-1 rounded-lg w-max">chriswong@hkteen.com</span>
+              <span className="font-black text-slate-400 uppercase tracking-wider">Subj:</span> <span className="text-indigo-700 font-black text-base">Advice for your problems</span>
+            </div>
+            
+            {/* The Email Content */}
+            <div className="font-sans text-xl text-slate-800 whitespace-pre-wrap leading-relaxed p-8 bg-white rounded-2xl shadow-inner border border-slate-100">
+              {getFullEmail()}
+            </div>
+          </div>
+
+          <div className={`p-6 flex justify-center items-center border-t-4 ${isGoodLength ? 'bg-green-50 border-green-400' : 'bg-orange-50 border-orange-400'}`}>
+            <div className="text-center">
+              <div className={`text-4xl font-black mb-2 ${isGoodLength ? 'text-green-600' : 'text-orange-600'}`}>
+                {wordCount} Words (字)
+              </div>
+              <p className="text-slate-700 font-bold text-lg">
+                {isGoodLength ? '🌟 字數非常完美！做得好！可以複製交功課了！' : '⚠️ 目標字數約為 100 字，你可以回上一頁增減內容。'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans pb-20 selection:bg-indigo-200 selection:text-indigo-900">
+      {/* 頂部控制列 */}
+      <div className="max-w-6xl mx-auto flex justify-end mb-4">
+        <button 
+          onClick={() => setSoundEnabled(!soundEnabled)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-full font-bold text-sm transition-all shadow-sm ${soundEnabled ? 'bg-white text-indigo-600 border border-indigo-100' : 'bg-slate-200 text-slate-500'}`}
+        >
+          {soundEnabled ? <><Volume2 size={16}/> 音效開啟</> : <><VolumeX size={16}/> 音效關閉</>}
+        </button>
+      </div>
+
+      <header className="max-w-6xl mx-auto mb-10 text-center relative">
+        <div className="inline-block relative">
+          <h1 className="text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 tracking-tight drop-shadow-sm mb-2">
+            Email of Advice 寫作挑戰
+          </h1>
+          <Sparkles className="absolute -top-6 -right-8 text-amber-400 animate-pulse" size={32} />
+        </div>
+        <p className="text-slate-500 text-lg font-bold">一步一步，解鎖寫作任務！🚀</p>
+      </header>
+
+      <div className="max-w-6xl mx-auto relative z-10">
+        {currentStep === 0 && renderHome()}
+        {currentStep === 1 && renderStep1()}
+        
+        {currentStep === 2 && renderWriteStep(2, "Advice for Pimples (青春痘)", "step2", vocab.step2_guide, vocab.step2_actions, "pink", "from-pink-400 to-rose-500")}
+        
+        {currentStep === 3 && renderWriteStep(3, "Advice for Weight (體重)", "step3", vocab.step3_guide, vocab.step3_actions, "orange", "from-orange-400 to-amber-500", 
+          <>
+            <span className="font-bold text-amber-600 text-base">💡 造句提示：</span>點擊按鈕前，請先打上 <br/>
+            <code className="text-blue-800 font-black bg-blue-100 px-2 py-1 rounded-md mt-2 inline-block shadow-sm">Why don't you </code> 或 <code className="text-blue-800 font-black bg-blue-100 px-2 py-1 rounded-md mt-2 inline-block shadow-sm">Have you thought about </code><br/>
+            <div className="bg-red-50 border border-red-200 p-2 rounded-lg mt-3">
+              <span className="text-sm text-red-600 font-black leading-tight">
+                ⚠️ 如果用 <span className="underline">about</span>，系統會自動幫你將動作改為 <strong>-ing (gerund)</strong>！記得自己加問號 <strong>?</strong>
+              </span>
+            </div>
+          </>
+        )}
+        
+        {/* Step 4 挑戰題：沒有按鈕，讓學生自己打字，只保留造句提示 */}
+        {currentStep === 4 && renderWriteStep(4, "Advice for Bullying (欺凌)", "step4", vocab.step4_guide, [], "red", "from-red-400 to-rose-600",
+          <>
+            <span className="font-bold text-amber-600 text-base">💡 造句提示：</span>這題沒有提示按鈕！請自己給她建議。<br/>
+            寫建議前，請先打上：<br/>
+            <code className="text-blue-800 font-black bg-blue-100 px-2 py-1 rounded-md mt-2 inline-block shadow-sm">If I were you, I would </code>
+          </>
+        )}
+        
+        {currentStep === 5 && renderStep5()}
+        {currentStep === 6 && renderReviewStep()}
+      </div>
+    </div>
+  );
+};
+
+export default App;
